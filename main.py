@@ -7,6 +7,7 @@
 import pygame
 import sys
 import math
+import array
 
 # --- 1. SETUP AND INITIALIZATION ---
 
@@ -43,6 +44,18 @@ dialogue_timer = 0
 transition_alpha = 0
 FADE_SPEED = 8
 
+# --- Cutscene Variables ---
+cutscene_lines = [
+    "Echoes of chains rattle in the darkness...",
+    "A heavy coffin lid shifts with a groan.",
+    "Khristopher: '...Who dares disturb my rest?'",
+    "Khristopher: 'No... I sense the blood of mankind.'",
+    "Khristopher: 'Then I shall rise once more.'"
+]
+cutscene_index = 0
+cutscene_timer = 0
+CUTSCENE_DELAY = 3500
+
 # --- FONTS ---
 font_small = pygame.font.Font(None, 32)
 font_medium = pygame.font.Font(None, 50)
@@ -72,13 +85,36 @@ LEVEL_HEIGHT = len(level_map) * TILE_SIZE
 # --- SOUND MANAGER & UI ---
 class SoundManager:
     def __init__(self):
-        self.sounds = {'light_attack': self.create_placeholder_sound(440, 0.1),'heavy_attack': self.create_placeholder_sound(220, 0.3),'player_hurt': self.create_placeholder_sound(330, 0.2),'interaction': self.create_placeholder_sound(660, 0.1), 'screech': self.create_placeholder_sound(1200, 0.5), 'devour': self.create_placeholder_sound(150, 0.8)}
-    def create_placeholder_sound(self, frequency, duration):
-        sample_rate = pygame.mixer.get_init()[0]; num_samples = int(sample_rate * duration); buf = bytearray(num_samples)
-        for i in range(num_samples): buf[i] = (int(127 * math.sin(2 * math.pi * frequency * i / sample_rate)) + 128) % 256
-        return pygame.mixer.Sound(buffer=buf)
+        self.sounds = {
+            'light_attack': self.create_placeholder_sound(440, 0.1),
+            'heavy_attack': self.create_placeholder_sound(220, 0.3),
+            'player_hurt': self.create_placeholder_sound(330, 0.2),
+            'interaction': self.create_placeholder_sound(660, 0.1),
+            'screech': self.create_placeholder_sound(1200, 0.5),
+            'devour': self.create_placeholder_sound(150, 0.8),
+            'awakening': self.create_placeholder_sound(60, 0.8, volume=0.6, harmonics=[1,2])
+        }
+        self.play_music()
+
+    def create_placeholder_sound(self, frequency, duration, volume=0.5, harmonics=None):
+        sample_rate = pygame.mixer.get_init()[0]
+        num_samples = int(sample_rate * duration)
+        buf = array.array('h')
+        harmonics = harmonics or [1]
+        for i in range(num_samples):
+            sample = 0
+            for h in harmonics:
+                sample += math.sin(2 * math.pi * frequency * h * i / sample_rate) / h
+            buf.append(int(32767 * volume * sample / len(harmonics)))
+        return pygame.mixer.Sound(buffer=buf.tobytes())
+
+    def play_music(self):
+        self.music = self.create_placeholder_sound(80, 1.0, volume=0.15, harmonics=[1,2,3])
+        self.music.play(-1)
+
     def play(self, sound_name):
-        if sound_name in self.sounds: self.sounds[sound_name].play()
+        if sound_name in self.sounds:
+            self.sounds[sound_name].play()
 sound_manager = SoundManager()
 
 def draw_player_health(surface, x, y, health, max_health):
@@ -122,8 +158,11 @@ def create_placeholder_sprites(color, width, height, num_frames=4):
     sprites = []
     for i in range(num_frames):
         surf = pygame.Surface([width, height], pygame.SRCALPHA)
-        brightness = 255 - (i * 30)
-        surf.fill((min(color[0], brightness), min(color[1], brightness), min(color[2], brightness)))
+        shade = [max(0, c - i * 25) for c in color]
+        pygame.draw.rect(surf, shade, (0, 0, width, height), border_radius=6)
+        highlight = [min(255, c + 40) for c in color]
+        pygame.draw.rect(surf, highlight, (4, 4, width - 8, height // 2), border_radius=4)
+        pygame.draw.rect(surf, (0, 0, 0), (0, 0, width, height), 2, border_radius=6)
         sprites.append(surf)
     return sprites
 
@@ -133,6 +172,13 @@ def start_transition(target_state, dialogue=""):
     transition_target_state = target_state
     transition_dialogue = dialogue
     transition_alpha = 0
+
+def start_cutscene():
+    global current_game_state, cutscene_index, cutscene_timer
+    cutscene_index = 0
+    cutscene_timer = 0
+    current_game_state = 'CUTSCENE'
+    sound_manager.play('awakening')
 
 # --- 2. PLAYER CLASS ---
 class Player(pygame.sprite.Sprite):
@@ -536,7 +582,11 @@ while running:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 play_button_rect = pygame.Rect(SCREEN_WIDTH/2 - 100, SCREEN_HEIGHT/2 - 25, 200, 50)
                 if play_button_rect.collidepoint(mouse_pos) and transition_phase is None:
-                    start_transition('GAMEPLAY')
+                    start_transition('CUTSCENE')
+        elif current_game_state == 'CUTSCENE':
+            if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+                cutscene_index += 1
+                cutscene_timer = 0
         elif current_game_state == 'GAME_OVER':
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 game_start(); current_game_state = 'GAMEPLAY'; pygame.mouse.set_visible(False)
@@ -546,6 +596,13 @@ while running:
         all_sprites.update(camera=camera, tiles=tiles, enemies_group=enemies)
         ui_sprites.update(); camera.update()
         if not player.alive(): game_over = True; current_game_state = 'GAME_OVER'
+    elif current_game_state == 'CUTSCENE':
+        cutscene_timer += clock.get_time()
+        if cutscene_timer > CUTSCENE_DELAY:
+            cutscene_index += 1
+            cutscene_timer = 0
+        if cutscene_index >= len(cutscene_lines) and transition_phase is None:
+            start_transition('GAMEPLAY')
 
     # Handle transitions
     if transition_phase == 'fade_out':
@@ -558,6 +615,8 @@ while running:
             else:
                 if transition_target_state == 'GAMEPLAY':
                     game_start()
+                elif transition_target_state == 'CUTSCENE':
+                    start_cutscene()
                 current_game_state = transition_target_state
                 if current_game_state == 'GAMEPLAY':
                     pygame.mouse.set_visible(False)
@@ -630,6 +689,9 @@ while running:
         screen.blit(text, text_rect)
         restart_text = font_medium.render("Press 'R' to awaken again", True, WHITE); restart_rect = restart_text.get_rect(center=(SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 20))
         screen.blit(restart_text, restart_rect)
+    elif current_game_state == 'CUTSCENE':
+        pygame.mouse.set_visible(False)
+        draw_text_box(screen, cutscene_lines[min(cutscene_index, len(cutscene_lines)-1)])
     if showing_lore:
         draw_text_box(screen, interaction_target.lore_text)
 
